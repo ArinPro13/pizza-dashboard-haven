@@ -1,7 +1,7 @@
 
 import React from "react";
 import { NavLink } from "./NavLink";
-import { BarChart2, Users, ShoppingBag, ClipboardList, Home } from "lucide-react";
+import { BarChart2, Users, ShoppingBag, ClipboardList, Home, X } from "lucide-react";
 
 interface SidebarProps {
   open: boolean;
