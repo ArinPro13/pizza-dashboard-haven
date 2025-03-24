@@ -23,10 +23,11 @@ interface DateRangePickerProps {
   className?: string;
 }
 
+// Define our DateRange type to match the one from react-day-picker
 type DateRange = {
-  from?: Date;
+  from: Date;
   to?: Date;
-};
+} | undefined;
 
 export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   onRangeChange,
@@ -40,8 +41,8 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
   const handlePresetChange = (value: string) => {
     const today = new Date();
-    let from: Date | undefined;
-    let to: Date | undefined = today;
+    let from: Date = today;
+    let to: Date = today;
 
     switch (value) {
       case "last7days":
@@ -118,9 +119,12 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
             defaultMonth={date?.from}
             selected={date}
             onSelect={(range) => {
-              setDate(range || {});
-              if (range?.from && range?.to) {
-                onRangeChange(range);
+              setDate(range);
+              if (range?.from) {
+                onRangeChange({
+                  from: range.from,
+                  to: range.to
+                });
               }
             }}
             numberOfMonths={2}
