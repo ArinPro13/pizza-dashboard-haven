@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import DashboardLayout from "@/components/layout/DashboardLayout";
@@ -215,7 +214,7 @@ const InventoryManagement = () => {
                     <SelectValue placeholder="Select ingredient" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Ingredients</SelectItem>
+                    <SelectItem value="all-ingredients">All Ingredients</SelectItem>
                     {inventoryLevels?.map(ing => (
                       <SelectItem key={ing.id} value={ing.id}>{ing.name}</SelectItem>
                     ))}
