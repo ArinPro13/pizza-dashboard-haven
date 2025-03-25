@@ -81,7 +81,8 @@ export async function fetchSalesSummary(dateRange: DateRange) {
     
     const orderCount = orderMap.size;
     const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
-    const deliveryPercentage = orderCount > 0 ? (deliveryCount / data.length) * 100 : 0;
+    // Convert to numbers before division to fix the type error
+    const deliveryPercentage = orderCount > 0 ? (Number(deliveryCount) / Number(data.length)) * 100 : 0;
     
     return {
       totalSales,
