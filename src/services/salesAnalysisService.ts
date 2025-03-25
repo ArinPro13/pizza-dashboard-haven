@@ -1,5 +1,5 @@
 
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
 import { DateRange } from './dashboardService';
 
@@ -16,42 +16,58 @@ export async function fetchSalesTrendWithFilters(
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    let query = supabase
+    // Fetch orders within date range
+    const { data: orderData, error: orderError } = await supabase
       .from('orders')
-      .select(`
-        id,
-        order_date,
-        total_amount,
-        order_items!inner(
-          item_id,
-          quantity,
-          items!inner(
-            category
-          )
-        )
-      `)
-      .gte('order_date', fromDate)
-      .lte('order_date', toDate);
+      .select('created_at, quantity, item_id')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate)
+      .order('created_at', { ascending: true });
+      
+    if (orderError) throw orderError;
     
-    const { data, error } = await query;
-    if (error) throw error;
+    // Get unique item IDs from orders
+    const itemIds = [...new Set(orderData.map(order => order.item_id))];
     
-    // Filter by category if provided
-    let filteredData = data;
-    if (category && category !== 'all') {
-      filteredData = data.filter(order => 
-        order.order_items.some((item: any) => 
-          item.items.category === category
-        )
-      );
+    // Skip if no orders in date range
+    if (itemIds.length === 0) {
+      return [];
     }
+    
+    // Fetch items with category filter if provided
+    let itemQuery = supabase
+      .from('items')
+      .select('item_id, item_price, item_cat');
+      
+    if (category && category !== 'all') {
+      itemQuery = itemQuery.eq('item_cat', category);
+    }
+    
+    itemQuery = itemQuery.in('item_id', itemIds);
+    
+    const { data: itemData, error: itemError } = await itemQuery;
+    if (itemError) throw itemError;
+    
+    // Create a set of item IDs that match the category filter
+    const filteredItemIds = new Set(itemData.map(item => item.item_id));
+    
+    // Create lookup map for item prices
+    const itemPrices = itemData.reduce((acc, item) => {
+      acc[item.item_id] = item.item_price;
+      return acc;
+    }, {});
+    
+    // Filter orders by the items that match the category
+    const filteredOrders = orderData.filter(order => 
+      filteredItemIds.has(order.item_id)
+    );
     
     // Group by date according to granularity
     const salesByDate: Record<string, { sales: number, orders: number }> = {};
     
-    filteredData.forEach(order => {
+    filteredOrders.forEach(order => {
       let dateKey;
-      const orderDate = new Date(order.order_date);
+      const orderDate = new Date(order.created_at);
       
       if (granularity === 'day') {
         dateKey = format(orderDate, 'MMM dd');
@@ -64,11 +80,14 @@ export async function fetchSalesTrendWithFilters(
         dateKey = format(orderDate, 'MMM yyyy');
       }
       
+      const price = itemPrices[order.item_id] || 0;
+      const saleAmount = price * order.quantity;
+      
       if (!salesByDate[dateKey]) {
         salesByDate[dateKey] = { sales: 0, orders: 0 };
       }
       
-      salesByDate[dateKey].sales += order.total_amount;
+      salesByDate[dateKey].sales += saleAmount;
       salesByDate[dateKey].orders += 1;
     });
     
@@ -97,41 +116,62 @@ export async function fetchBestSellingItems(
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    let query = supabase
-      .from('order_items')
-      .select(`
-        item_id,
-        quantity,
-        price,
-        orders!inner(order_date),
-        items!inner(name, category)
-      `)
-      .gte('orders.order_date', fromDate)
-      .lte('orders.order_date', toDate);
+    // Fetch orders within date range
+    const { data: orderData, error: orderError } = await supabase
+      .from('orders')
+      .select('item_id, quantity')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
+      
+    if (orderError) throw orderError;
     
-    const { data, error } = await query;
-    if (error) throw error;
-    
-    // Filter by category
-    let filteredData = data;
-    if (category && category !== 'all') {
-      filteredData = data.filter((item: any) => 
-        item.items.category === category
-      );
+    // Skip if no orders in date range
+    if (orderData.length === 0) {
+      return [];
     }
+    
+    // Get unique item IDs from orders
+    const itemIds = [...new Set(orderData.map(order => order.item_id))];
+    
+    // Fetch items with category filter if provided
+    let itemQuery = supabase
+      .from('items')
+      .select('item_id, item_name, item_price, item_cat');
+      
+    if (category && category !== 'all') {
+      itemQuery = itemQuery.eq('item_cat', category);
+    }
+    
+    itemQuery = itemQuery.in('item_id', itemIds);
+    
+    const { data: itemData, error: itemError } = await itemQuery;
+    if (itemError) throw itemError;
+    
+    // Create lookup map for item details
+    const itemDetails = itemData.reduce((acc, item) => {
+      acc[item.item_id] = {
+        name: item.item_name,
+        price: item.item_price,
+        category: item.item_cat
+      };
+      return acc;
+    }, {});
     
     // Group and aggregate by item
     const itemSales: Record<string, { name: string, sales: number }> = {};
     
-    filteredData.forEach((orderItem: any) => {
-      const itemName = orderItem.items.name;
-      const salesAmount = orderItem.quantity * orderItem.price;
+    orderData.forEach(order => {
+      const itemId = order.item_id;
+      const itemDetail = itemDetails[itemId];
       
-      if (!itemSales[itemName]) {
-        itemSales[itemName] = { name: itemName, sales: 0 };
+      // Skip if item doesn't match category filter
+      if (!itemDetail) return;
+      
+      if (!itemSales[itemId]) {
+        itemSales[itemId] = { name: itemDetail.name, sales: 0 };
       }
       
-      itemSales[itemName].sales += salesAmount;
+      itemSales[itemId].sales += order.quantity * itemDetail.price;
     });
     
     // Convert to array, sort by sales, and limit
@@ -153,35 +193,60 @@ export async function fetchSalesByCategory(dateRange: DateRange) {
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    const { data, error } = await supabase
-      .from('order_items')
-      .select(`
-        quantity,
-        price,
-        orders!inner(order_date),
-        items!inner(category)
-      `)
-      .gte('orders.order_date', fromDate)
-      .lte('orders.order_date', toDate);
+    // Fetch orders within date range
+    const { data: orderData, error: orderError } = await supabase
+      .from('orders')
+      .select('item_id, quantity')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
+      
+    if (orderError) throw orderError;
     
-    if (error) throw error;
+    // Skip if no orders in date range
+    if (orderData.length === 0) {
+      return [];
+    }
     
-    // Calculate total sales amount
-    const totalSales = data.reduce((sum, item: any) => 
-      sum + (item.quantity * item.price), 0);
+    // Get unique item IDs from orders
+    const itemIds = [...new Set(orderData.map(order => order.item_id))];
     
-    // Group by category
+    // Fetch item details
+    const { data: itemData, error: itemError } = await supabase
+      .from('items')
+      .select('item_id, item_price, item_cat')
+      .in('item_id', itemIds);
+      
+    if (itemError) throw itemError;
+    
+    // Create lookup map for item details
+    const itemDetails = itemData.reduce((acc, item) => {
+      acc[item.item_id] = {
+        price: item.item_price,
+        category: item.item_cat
+      };
+      return acc;
+    }, {});
+    
+    // Calculate sales by category
     const salesByCategory: Record<string, number> = {};
+    let totalSales = 0;
     
-    data.forEach((orderItem: any) => {
-      const category = orderItem.items.category;
-      const salesAmount = orderItem.quantity * orderItem.price;
+    orderData.forEach(order => {
+      const itemId = order.item_id;
+      const itemDetail = itemDetails[itemId];
+      
+      // Skip if item details not found
+      if (!itemDetail) return;
+      
+      const category = itemDetail.category || 'Uncategorized';
+      const saleAmount = order.quantity * itemDetail.price;
       
       if (!salesByCategory[category]) {
         salesByCategory[category] = 0;
       }
       
-      salesByCategory[category] += salesAmount;
+      salesByCategory[category] += saleAmount;
+      totalSales += saleAmount;
     });
     
     // Convert to percentage format for pie chart
@@ -209,16 +274,16 @@ export async function fetchPeakOrderTimes(
   try {
     const { data, error } = await supabase
       .from('orders')
-      .select('order_date')
-      .gte('order_date', fromDate)
-      .lte('order_date', toDate);
+      .select('created_at')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
     
     if (error) throw error;
     
     const orderCounts: Record<string, number> = {};
     
     data.forEach(order => {
-      const orderDate = new Date(order.order_date);
+      const orderDate = new Date(order.created_at);
       let timeKey;
       
       if (granularity === 'hourly') {

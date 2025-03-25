@@ -1,5 +1,5 @@
 
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
 import { DateRange } from './dashboardService';
 
@@ -16,50 +16,107 @@ export async function fetchStaffHours(
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    let query = supabase
-      .from('shifts')
-      .select(`
-        hours_worked,
-        hourly_rate,
-        staff!inner(id, name, role)
-      `)
-      .gte('start_time', fromDate)
-      .lte('end_time', toDate);
-    
+    // First, get the shift assignments in the date range
+    let rotaQuery = supabase
+      .from('rota')
+      .select('staff_id, shift_id, date')
+      .gte('date', fromDate)
+      .lte('date', toDate);
+      
     // Filter by staff ID if provided
     if (staffId) {
-      query = query.eq('staff_id', staffId);
+      rotaQuery = rotaQuery.eq('staff_id', staffId);
     }
     
-    // Filter by role if provided
-    if (role && role !== 'all') {
-      query = query.eq('staff.role', role);
+    const { data: rotaData, error: rotaError } = await rotaQuery;
+    if (rotaError) throw rotaError;
+    
+    // Skip if no shifts in date range
+    if (rotaData.length === 0) {
+      return [];
     }
     
-    const { data, error } = await query;
-    if (error) throw error;
+    // Get shift details
+    const shiftIds = [...new Set(rotaData.map(rota => rota.shift_id))];
     
-    // Group by staff member
-    const staffHours: Record<string, { name: string, hours: number, cost: number }> = {};
-    
-    data.forEach((shift: any) => {
-      const staffName = shift.staff.name;
-      const hoursWorked = shift.hours_worked;
-      const hourlyRate = shift.hourly_rate;
-      const cost = hoursWorked * hourlyRate;
+    const { data: shiftsData, error: shiftsError } = await supabase
+      .from('shifts')
+      .select('shift_id, start_time, end_time')
+      .in('shift_id', shiftIds);
       
-      if (!staffHours[staffName]) {
-        staffHours[staffName] = { name: staffName, hours: 0, cost: 0 };
+    if (shiftsError) throw shiftsError;
+    
+    // Create lookup map for shift duration
+    const shiftDurations = shiftsData.reduce((acc, shift) => {
+      const startTime = new Date(`1970-01-01T${shift.start_time}Z`);
+      const endTime = new Date(`1970-01-01T${shift.end_time}Z`);
+      
+      // Calculate duration in hours
+      let hours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+      
+      // Handle shifts that cross midnight
+      if (hours < 0) {
+        hours += 24;
       }
       
-      staffHours[staffName].hours += hoursWorked;
-      staffHours[staffName].cost += cost;
+      acc[shift.shift_id] = hours;
+      return acc;
+    }, {});
+    
+    // Get staff details
+    const staffIds = [...new Set(rotaData.map(rota => rota.staff_id))];
+    
+    let staffQuery = supabase
+      .from('staffs')
+      .select('staff_id, first_name, last_name, hourly_rate, position');
+      
+    // Filter by role if provided
+    if (role && role !== 'all') {
+      staffQuery = staffQuery.eq('position', role);
+    }
+    
+    staffQuery = staffQuery.in('staff_id', staffIds);
+    
+    const { data: staffData, error: staffError } = await staffQuery;
+    if (staffError) throw staffError;
+    
+    // Create lookup map for staff details
+    const staffDetails = staffData.reduce((acc, staff) => {
+      acc[staff.staff_id] = {
+        name: `${staff.first_name} ${staff.last_name}`,
+        hourlyRate: staff.hourly_rate,
+        position: staff.position
+      };
+      return acc;
+    }, {});
+    
+    // Calculate hours and costs per staff member
+    const staffHours: Record<string, { name: string, hours: number, cost: number }> = {};
+    
+    rotaData.forEach(rota => {
+      const staffId = rota.staff_id;
+      const shiftId = rota.shift_id;
+      
+      // Skip if staff or shift details not found
+      if (!staffDetails[staffId] || !shiftDurations[shiftId]) return;
+      
+      const staffName = staffDetails[staffId].name;
+      const hourlyRate = staffDetails[staffId].hourlyRate;
+      const hours = shiftDurations[shiftId];
+      const cost = hours * hourlyRate;
+      
+      if (!staffHours[staffId]) {
+        staffHours[staffId] = { name: staffName, hours: 0, cost: 0 };
+      }
+      
+      staffHours[staffId].hours += hours;
+      staffHours[staffId].cost += cost;
     });
     
     // Format for charts
     return Object.values(staffHours).map(staff => ({
       name: staff.name,
-      hours: Math.round(staff.hours),
+      hours: Math.round(staff.hours * 10) / 10, // Round to 1 decimal place
       cost: Math.round(staff.cost)
     }));
   } catch (error) {
@@ -80,18 +137,37 @@ export async function fetchShiftCoverage(
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    let query = supabase
-      .from('shifts')
-      .select(`
-        start_time,
-        end_time,
-        staff!inner(id, name, role)
-      `)
-      .gte('start_time', fromDate)
-      .lte('end_time', toDate);
+    // Get rota data for the date range
+    const { data: rotaData, error: rotaError } = await supabase
+      .from('rota')
+      .select('date, shift_id')
+      .gte('date', fromDate)
+      .lte('date', toDate);
+      
+    if (rotaError) throw rotaError;
     
-    const { data, error } = await query;
-    if (error) throw error;
+    // Skip if no shifts in date range
+    if (rotaData.length === 0) {
+      return [];
+    }
+    
+    // Get shift details
+    const shiftIds = [...new Set(rotaData.map(rota => rota.shift_id))];
+    
+    const { data: shiftsData, error: shiftsError } = await supabase
+      .from('shifts')
+      .select('shift_id, start_time, day_of_week');
+      
+    if (shiftsError) throw shiftsError;
+    
+    // Create lookup map for shift timing
+    const shiftTimes = shiftsData.reduce((acc, shift) => {
+      acc[shift.shift_id] = {
+        startTime: shift.start_time,
+        dayOfWeek: shift.day_of_week
+      };
+      return acc;
+    }, {});
     
     // Group by day of week and shift time
     const shiftCoverage: Record<string, { morning: number, afternoon: number, evening: number }> = {
@@ -104,21 +180,29 @@ export async function fetchShiftCoverage(
       "Sunday": { morning: 0, afternoon: 0, evening: 0 }
     };
     
-    data.forEach((shift: any) => {
-      const startTime = new Date(shift.start_time);
-      const endTime = new Date(shift.end_time);
-      const day = format(startTime, 'EEEE'); // Full day name
-      const hour = startTime.getHours();
+    rotaData.forEach(rota => {
+      const shiftId = rota.shift_id;
+      const shiftInfo = shiftTimes[shiftId];
+      
+      // Skip if shift info not found
+      if (!shiftInfo) return;
+      
+      const day = shiftInfo.dayOfWeek || format(new Date(rota.date), 'EEEE'); // Use shift day or date's day
       
       // Skip if we're filtering by day of week
       if (dayOfWeek && dayOfWeek !== 'all' && day !== dayOfWeek) {
         return;
       }
       
+      const startTimeStr = shiftInfo.startTime;
+      
+      // Parse hour from time string (assuming format like "09:00:00")
+      const hour = parseInt(startTimeStr.split(':')[0], 10);
+      
       // Categorize by shift time
-      if (hour >= 8 && hour < 14) {
+      if (hour >= 6 && hour < 12) {
         shiftCoverage[day].morning += 1;
-      } else if (hour >= 14 && hour < 20) {
+      } else if (hour >= 12 && hour < 18) {
         shiftCoverage[day].afternoon += 1;
       } else {
         shiftCoverage[day].evening += 1;
@@ -151,60 +235,109 @@ export async function fetchStaffSchedule(
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    let query = supabase
-      .from('shifts')
-      .select(`
-        id,
-        start_time,
-        end_time,
-        staff!inner(id, name, role)
-      `)
-      .gte('start_time', fromDate)
-      .lte('end_time', toDate);
-    
+    // Get staff details
+    let staffQuery = supabase
+      .from('staffs')
+      .select('staff_id, first_name, last_name, position');
+      
     // Filter by staff ID if provided
     if (staffId) {
-      query = query.eq('staff_id', staffId);
+      staffQuery = staffQuery.eq('staff_id', staffId);
     }
     
     // Filter by role if provided
     if (role && role !== 'all') {
-      query = query.eq('staff.role', role);
+      staffQuery = staffQuery.eq('position', role);
     }
     
-    const { data, error } = await query;
-    if (error) throw error;
+    const { data: staffData, error: staffError } = await staffQuery;
+    if (staffError) throw staffError;
+    
+    // Skip if no staff members found
+    if (staffData.length === 0) {
+      return [];
+    }
+    
+    // Get rota data for these staff members
+    const staffIds = staffData.map(staff => staff.staff_id);
+    
+    const { data: rotaData, error: rotaError } = await supabase
+      .from('rota')
+      .select('staff_id, shift_id, date')
+      .in('staff_id', staffIds)
+      .gte('date', fromDate)
+      .lte('date', toDate);
+      
+    if (rotaError) throw rotaError;
+    
+    // Get shift details
+    const shiftIds = [...new Set(rotaData.map(rota => rota.shift_id))];
+    
+    const { data: shiftsData, error: shiftsError } = await supabase
+      .from('shifts')
+      .select('shift_id, start_time, end_time, day_of_week');
+      
+    if (shiftsError) throw shiftsError;
+    
+    // Create lookup map for shift details
+    const shiftDetails = shiftsData.reduce((acc, shift) => {
+      acc[shift.shift_id] = {
+        startTime: shift.start_time,
+        endTime: shift.end_time,
+        dayOfWeek: shift.day_of_week
+      };
+      return acc;
+    }, {});
     
     // Group shifts by staff member and day of week
     const staffSchedule: Record<string, any> = {};
     
-    data.forEach((shift: any) => {
-      const staffId = shift.staff.id;
-      const staffName = shift.staff.name;
-      const staffRole = shift.staff.role;
-      const startTime = new Date(shift.start_time);
-      const endTime = new Date(shift.end_time);
-      const day = format(startTime, 'EEEE').toLowerCase(); // e.g., monday
+    staffData.forEach(staff => {
+      staffSchedule[staff.staff_id] = {
+        id: staff.staff_id,
+        name: `${staff.first_name} ${staff.last_name}`,
+        role: staff.position,
+        monday: "OFF",
+        tuesday: "OFF",
+        wednesday: "OFF",
+        thursday: "OFF",
+        friday: "OFF",
+        saturday: "OFF",
+        sunday: "OFF"
+      };
+    });
+    
+    rotaData.forEach(rota => {
+      const staffId = rota.staff_id;
+      const shiftId = rota.shift_id;
+      const shiftInfo = shiftDetails[shiftId];
       
-      if (!staffSchedule[staffId]) {
-        staffSchedule[staffId] = {
-          id: staffId,
-          name: staffName,
-          role: staffRole,
-          monday: "OFF",
-          tuesday: "OFF",
-          wednesday: "OFF",
-          thursday: "OFF",
-          friday: "OFF",
-          saturday: "OFF",
-          sunday: "OFF"
-        };
-      }
+      // Skip if shift info not found
+      if (!shiftInfo) return;
+      
+      // Get day of week from shift or from date
+      let day = shiftInfo.dayOfWeek?.toLowerCase() || 
+                format(new Date(rota.date), 'EEEE').toLowerCase();
       
       // Format the shift time
-      const formattedStart = format(startTime, 'ha').toUpperCase();
-      const formattedEnd = format(endTime, 'ha').toUpperCase();
-      staffSchedule[staffId][day] = `${formattedStart}-${formattedEnd}`;
+      const startTimeStr = shiftInfo.startTime;
+      const endTimeStr = shiftInfo.endTime;
+      
+      // Format hours to 12-hour format with AM/PM
+      const formatTime = (timeStr: string) => {
+        const [hours, minutes] = timeStr.split(':').map(Number);
+        const period = hours >= 12 ? 'PM' : 'AM';
+        const hour12 = hours % 12 || 12;
+        return `${hour12}${period}`;
+      };
+      
+      const formattedStart = formatTime(startTimeStr);
+      const formattedEnd = formatTime(endTimeStr);
+      
+      // Update the schedule for this staff member
+      if (staffSchedule[staffId]) {
+        staffSchedule[staffId][day] = `${formattedStart}-${formattedEnd}`;
+      }
     });
     
     // Convert to array

@@ -1,5 +1,5 @@
 
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
 import { DateRange } from './dashboardService';
 
@@ -14,17 +14,26 @@ export async function fetchCustomerOrderFrequency(dateRange: DateRange) {
   try {
     const { data, error } = await supabase
       .from('orders')
-      .select('customer_id')
-      .gte('order_date', fromDate)
-      .lte('order_date', toDate);
+      .select('cust_id, order_id')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
     
     if (error) throw error;
     
     // Count orders per customer
     const customerOrders: Record<string, number> = {};
     
+    // Group by order_id to avoid counting duplicates from multiple items
+    const orderCustomers = new Map();
     data.forEach(order => {
-      const customerId = order.customer_id.toString();
+      if (order.cust_id && order.order_id) {
+        orderCustomers.set(order.order_id, order.cust_id);
+      }
+    });
+    
+    // Count orders per customer
+    orderCustomers.forEach((custId, orderId) => {
+      const customerId = custId.toString();
       
       if (!customerOrders[customerId]) {
         customerOrders[customerId] = 0;
@@ -80,35 +89,53 @@ export async function fetchCustomerPreferences(
   
   try {
     let query = supabase
-      .from('order_items')
-      .select(`
-        quantity,
-        items(name),
-        orders!inner(customer_id, order_date)
-      `)
-      .gte('orders.order_date', fromDate)
-      .lte('orders.order_date', toDate);
+      .from('orders')
+      .select('cust_id, item_id, quantity')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
     
     // Filter by customer if provided
     if (customerId) {
-      query = query.eq('orders.customer_id', customerId);
+      query = query.eq('cust_id', customerId);
     }
     
-    const { data, error } = await query;
-    if (error) throw error;
+    const { data: orderData, error: orderError } = await query;
+    if (orderError) throw orderError;
+    
+    // Skip if no orders in date range
+    if (orderData.length === 0) {
+      return [];
+    }
+    
+    // Get unique item IDs
+    const itemIds = [...new Set(orderData.map(order => order.item_id))];
+    
+    // Fetch item details
+    const { data: itemData, error: itemError } = await supabase
+      .from('items')
+      .select('item_id, item_name')
+      .in('item_id', itemIds);
+      
+    if (itemError) throw itemError;
+    
+    // Create lookup map for item names
+    const itemNames = itemData.reduce((acc, item) => {
+      acc[item.item_id] = item.item_name;
+      return acc;
+    }, {});
     
     // Group by item
     const itemPreferences: Record<string, number> = {};
     
-    data.forEach((orderItem: any) => {
-      const itemName = orderItem.items.name;
-      const quantity = orderItem.quantity;
+    orderData.forEach(order => {
+      const itemId = order.item_id;
+      const itemName = itemNames[itemId] || `Item ${itemId}`;
       
       if (!itemPreferences[itemName]) {
         itemPreferences[itemName] = 0;
       }
       
-      itemPreferences[itemName] += quantity;
+      itemPreferences[itemName] += order.quantity;
     });
     
     // Convert to array and sort by popularity
@@ -136,13 +163,13 @@ export async function fetchDeliveryPickupPreferences(
   try {
     let query = supabase
       .from('orders')
-      .select('order_date, delivery_method')
-      .gte('order_date', fromDate)
-      .lte('order_date', toDate);
+      .select('created_at, delivery, cust_id')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
     
     // Filter by customer if provided
     if (customerId) {
-      query = query.eq('customer_id', customerId);
+      query = query.eq('cust_id', customerId);
     }
     
     const { data, error } = await query;
@@ -152,13 +179,13 @@ export async function fetchDeliveryPickupPreferences(
     const monthlyPreferences: Record<string, { delivery: number, pickup: number, total: number }> = {};
     
     data.forEach(order => {
-      const month = format(new Date(order.order_date), 'MMM');
+      const month = format(new Date(order.created_at), 'MMM');
       
       if (!monthlyPreferences[month]) {
         monthlyPreferences[month] = { delivery: 0, pickup: 0, total: 0 };
       }
       
-      if (order.delivery_method === 'delivery') {
+      if (order.delivery === 1) {
         monthlyPreferences[month].delivery += 1;
       } else {
         monthlyPreferences[month].pickup += 1;
