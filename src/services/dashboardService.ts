@@ -81,7 +81,7 @@ export async function fetchSalesSummary(dateRange: DateRange) {
     
     const orderCount = orderMap.size;
     const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
-    const deliveryPercentage = orderCount > 0 ? (deliveryCount / orderCount) * 100 : 0;
+    const deliveryPercentage = orderCount > 0 ? (deliveryCount / data.length) * 100 : 0;
     
     return {
       totalSales,
@@ -95,14 +95,16 @@ export async function fetchSalesSummary(dateRange: DateRange) {
   }
 }
 
+// This is the renamed function to match what's expected in Index.tsx
+export const fetchDashboardKPIs = fetchSalesSummary;
+
 // Get sales trend for dashboard
-export async function fetchSalesTrend(days: number = 30) {
-  const endDate = new Date();
-  const startDate = subDays(endDate, days);
+export async function fetchSalesTrend(dateRange: DateRange) {
+  const { from, to = new Date() } = dateRange;
   
   // Format dates for Supabase query
-  const fromDate = format(startDate, 'yyyy-MM-dd');
-  const toDate = format(endDate, 'yyyy-MM-dd');
+  const fromDate = format(from, 'yyyy-MM-dd');
+  const toDate = format(to, 'yyyy-MM-dd');
   
   try {
     // Fetch raw orders data
@@ -146,8 +148,8 @@ export async function fetchSalesTrend(days: number = 30) {
     });
     
     // Fill in missing dates
-    let currentDate = startDate;
-    while (currentDate <= endDate) {
+    let currentDate = new Date(from);
+    while (currentDate <= to) {
       const dateString = format(currentDate, 'yyyy-MM-dd');
       
       if (!salesByDay[dateString]) {
@@ -161,7 +163,7 @@ export async function fetchSalesTrend(days: number = 30) {
     return Object.entries(salesByDay)
       .map(([date, amount]) => ({
         date: format(new Date(date), 'MMM dd'),
-        amount
+        amount: Number(amount) // Ensure amount is a number
       }))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   } catch (error) {
@@ -171,12 +173,20 @@ export async function fetchSalesTrend(days: number = 30) {
 }
 
 // Get top items for dashboard
-export async function fetchTopItems(limit: number = 5) {
+export async function fetchTopItems(dateRange: DateRange) {
   try {
+    const { from, to = new Date() } = dateRange;
+    
+    // Format dates for Supabase query
+    const fromDate = format(from, 'yyyy-MM-dd');
+    const toDate = format(to, 'yyyy-MM-dd');
+    
     // Query to count items and their quantities
     const { data, error } = await supabase
       .from('orders')
-      .select('item_id, quantity');
+      .select('item_id, quantity')
+      .gte('created_at', fromDate)
+      .lte('created_at', toDate);
     
     if (error) throw error;
     
@@ -196,7 +206,7 @@ export async function fetchTopItems(limit: number = 5) {
     // Get top N items by quantity
     const topItemIds = Object.entries(itemQuantities)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, limit)
+      .slice(0, 5)
       .map(entry => entry[0]);
     
     if (topItemIds.length === 0) {
@@ -211,13 +221,13 @@ export async function fetchTopItems(limit: number = 5) {
     
     if (itemsError) throw itemsError;
     
-    // Format for chart
+    // Format for chart - match the TopItem interface with the quantity property
     return topItemIds.map(id => {
       const item = itemsData.find(item => item.item_id === id);
       
       return {
         name: item ? item.item_name : `Item ${id}`,
-        value: itemQuantities[id],
+        quantity: itemQuantities[id],
         price: item ? item.item_price : 0
       };
     });

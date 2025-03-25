@@ -2,9 +2,10 @@
 import React from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
-interface TopItem {
+export interface TopItem {
   name: string;
   quantity: number;
+  price?: number;
 }
 
 interface TopItemsChartProps {

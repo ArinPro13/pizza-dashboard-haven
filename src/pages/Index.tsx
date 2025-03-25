@@ -7,11 +7,11 @@ import { SalesChart } from "@/components/dashboard/SalesChart";
 import { TopItemsChart } from "@/components/dashboard/TopItemsChart";
 import { DateRangePicker } from "@/components/analysis/DateRangePicker";
 import { DollarSign, ShoppingBag, Users, Truck } from "lucide-react";
-import { fetchDashboardKPIs, fetchSalesTrend, fetchTopItems } from "@/services/dashboardService";
+import { fetchDashboardKPIs, fetchSalesTrend, fetchTopItems, DateRange } from "@/services/dashboardService";
 import { toast } from "sonner";
 
 const Dashboard = () => {
-  const [dateRange, setDateRange] = useState({
+  const [dateRange, setDateRange] = useState<DateRange>({
     from: new Date(new Date().setDate(new Date().getDate() - 30)),
     to: new Date(),
   });
