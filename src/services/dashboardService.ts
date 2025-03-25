@@ -1,14 +1,14 @@
 
 import { supabase } from '@/integrations/supabase/client';
-import { addDays, format, subDays } from 'date-fns';
+import { format, startOfDay, endOfDay, subDays } from 'date-fns';
 
-export type DateRange = {
+export interface DateRange {
   from: Date;
   to?: Date;
-};
+}
 
-// Dashboard KPI metrics
-export async function fetchDashboardKPIs(dateRange: DateRange) {
+// Get sales summary for dashboard
+export async function fetchSalesSummary(dateRange: DateRange) {
   const { from, to = new Date() } = dateRange;
   
   // Format dates for Supabase query
@@ -16,201 +16,211 @@ export async function fetchDashboardKPIs(dateRange: DateRange) {
   const toDate = format(to, 'yyyy-MM-dd');
   
   try {
-    // Total sales amount
-    const { data: orderData, error: orderError } = await supabase
+    // Fetch raw orders data
+    const { data, error } = await supabase
       .from('orders')
       .select('quantity, item_id, delivery, order_id')
       .gte('created_at', fromDate)
       .lte('created_at', toDate);
-      
-    if (orderError) throw orderError;
     
-    // Get items to calculate sales
-    const itemIds = [...new Set(orderData.map(order => order.item_id))];
+    if (error) throw error;
     
     // Skip if no orders in date range
-    if (itemIds.length === 0) {
+    if (data.length === 0) {
       return {
         totalSales: 0,
         orderCount: 0,
         avgOrderValue: 0,
-        deliveryPercentage: 0,
-        pickupPercentage: 0
+        deliveryPercentage: 0
       };
     }
     
-    const { data: itemData, error: itemError } = await supabase
+    // Fetch item prices
+    const itemIds = [...new Set(data.map(order => order.item_id))];
+    
+    const { data: itemsData, error: itemsError } = await supabase
       .from('items')
       .select('item_id, item_price')
       .in('item_id', itemIds);
-      
-    if (itemError) throw itemError;
     
-    // Create lookup map for item prices
-    const itemPrices = itemData.reduce((acc, item) => {
-      acc[item.item_id] = item.item_price;
+    if (itemsError) throw itemsError;
+    
+    // Create a lookup map for item prices
+    const itemPrices = itemsData.reduce((acc, item) => {
+      acc[item.item_id] = item.item_price || 0;
       return acc;
     }, {});
     
-    // Calculate metrics
+    // Calculate sales metrics
     let totalSales = 0;
+    let deliveryCount = 0;
+    const orderMap = new Map();
     
-    orderData.forEach(order => {
-      const price = itemPrices[order.item_id] || 0;
-      totalSales += price * order.quantity;
+    data.forEach(order => {
+      const itemPrice = itemPrices[order.item_id] || 0;
+      const orderValue = (order.quantity || 1) * itemPrice;
+      
+      totalSales += orderValue;
+      
+      if (order.delivery === 1) {
+        deliveryCount++;
+      }
+      
+      // Track unique orders
+      if (order.order_id) {
+        if (!orderMap.has(order.order_id)) {
+          orderMap.set(order.order_id, {
+            total: 0,
+            isDelivery: order.delivery === 1
+          });
+        }
+        
+        orderMap.get(order.order_id).total += orderValue;
+      }
     });
     
-    // Count unique order IDs
-    const uniqueOrderIds = [...new Set(orderData.map(order => order.order_id))];
-    const orderCount = uniqueOrderIds.length;
-    
-    // Calculate average order value
+    const orderCount = orderMap.size;
     const avgOrderValue = orderCount > 0 ? totalSales / orderCount : 0;
-    
-    // Count delivery vs pickup orders
-    const deliveryCount = orderData.filter(order => order.delivery === 1).length;
-    const pickupCount = orderData.filter(order => order.delivery === 0).length;
-    const totalCount = deliveryCount + pickupCount;
+    const deliveryPercentage = orderCount > 0 ? (deliveryCount / orderCount) * 100 : 0;
     
     return {
       totalSales,
       orderCount,
       avgOrderValue,
-      deliveryPercentage: totalCount > 0 ? (deliveryCount / totalCount) * 100 : 0,
-      pickupPercentage: totalCount > 0 ? (pickupCount / totalCount) * 100 : 0
+      deliveryPercentage
     };
   } catch (error) {
-    console.error('Error fetching dashboard KPIs:', error);
+    console.error('Error fetching sales summary:', error);
     throw error;
   }
 }
 
-// Sales trend data for the selected date range
-export async function fetchSalesTrend(dateRange: DateRange) {
-  const { from, to = new Date() } = dateRange;
+// Get sales trend for dashboard
+export async function fetchSalesTrend(days: number = 30) {
+  const endDate = new Date();
+  const startDate = subDays(endDate, days);
   
   // Format dates for Supabase query
-  const fromDate = format(from, 'yyyy-MM-dd');
-  const toDate = format(to, 'yyyy-MM-dd');
+  const fromDate = format(startDate, 'yyyy-MM-dd');
+  const toDate = format(endDate, 'yyyy-MM-dd');
   
   try {
-    // Fetch orders within date range
-    const { data: orderData, error: orderError } = await supabase
+    // Fetch raw orders data
+    const { data, error } = await supabase
       .from('orders')
       .select('created_at, quantity, item_id')
       .gte('created_at', fromDate)
-      .lte('created_at', toDate)
-      .order('created_at', { ascending: true });
-      
-    if (orderError) throw orderError;
+      .lte('created_at', toDate);
     
-    // Get unique item IDs from orders
-    const itemIds = [...new Set(orderData.map(order => order.item_id))];
-    
-    // Skip if no orders in date range
-    if (itemIds.length === 0) {
-      return [];
-    }
+    if (error) throw error;
     
     // Fetch item prices
-    const { data: itemData, error: itemError } = await supabase
+    const itemIds = [...new Set(data.map(order => order.item_id))];
+    
+    const { data: itemsData, error: itemsError } = await supabase
       .from('items')
       .select('item_id, item_price')
       .in('item_id', itemIds);
-      
-    if (itemError) throw itemError;
     
-    // Create lookup map for item prices
-    const itemPrices = itemData.reduce((acc, item) => {
-      acc[item.item_id] = item.item_price;
+    if (itemsError) throw itemsError;
+    
+    // Create a lookup map for item prices
+    const itemPrices = itemsData.reduce((acc, item) => {
+      acc[item.item_id] = item.item_price || 0;
       return acc;
     }, {});
     
-    // Group by date
-    const salesByDate = orderData.reduce((acc, order) => {
-      const date = order.created_at.split('T')[0]; // Extract date part
-      const price = itemPrices[order.item_id] || 0;
-      const amount = price * order.quantity;
-      
-      if (!acc[date]) {
-        acc[date] = 0;
-      }
-      acc[date] += amount;
-      return acc;
-    }, {} as Record<string, number>);
+    // Group sales by day
+    const salesByDay = {};
     
-    // Convert to array format expected by charts
-    return Object.entries(salesByDate).map(([date, amount]) => ({
-      date: format(new Date(date), 'MMM dd'),
-      amount
-    }));
+    data.forEach(order => {
+      const date = format(new Date(order.created_at), 'yyyy-MM-dd');
+      const itemPrice = itemPrices[order.item_id] || 0;
+      const orderValue = (order.quantity || 1) * itemPrice;
+      
+      if (!salesByDay[date]) {
+        salesByDay[date] = 0;
+      }
+      
+      salesByDay[date] += orderValue;
+    });
+    
+    // Fill in missing dates
+    let currentDate = startDate;
+    while (currentDate <= endDate) {
+      const dateString = format(currentDate, 'yyyy-MM-dd');
+      
+      if (!salesByDay[dateString]) {
+        salesByDay[dateString] = 0;
+      }
+      
+      currentDate = new Date(currentDate.setDate(currentDate.getDate() + 1));
+    }
+    
+    // Format for chart
+    return Object.entries(salesByDay)
+      .map(([date, amount]) => ({
+        date: format(new Date(date), 'MMM dd'),
+        amount
+      }))
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   } catch (error) {
     console.error('Error fetching sales trend:', error);
     throw error;
   }
 }
 
-// Top 5 best-selling items
-export async function fetchTopItems(dateRange: DateRange) {
-  const { from, to = new Date() } = dateRange;
-  
-  // Format dates for Supabase query
-  const fromDate = format(from, 'yyyy-MM-dd');
-  const toDate = format(to, 'yyyy-MM-dd');
-  
+// Get top items for dashboard
+export async function fetchTopItems(limit: number = 5) {
   try {
-    // Fetch orders within date range
-    const { data: orderData, error: orderError } = await supabase
+    // Query to count items and their quantities
+    const { data, error } = await supabase
       .from('orders')
-      .select('item_id, quantity')
-      .gte('created_at', fromDate)
-      .lte('created_at', toDate);
-      
-    if (orderError) throw orderError;
+      .select('item_id, quantity');
     
-    // Skip if no orders in date range
-    if (orderData.length === 0) {
-      return [];
-    }
+    if (error) throw error;
     
-    // Group and sum by item
-    const itemQuantities: Record<string, number> = {};
+    // Group and sum quantities by item
+    const itemQuantities = {};
     
-    orderData.forEach(order => {
+    data.forEach(order => {
       const itemId = order.item_id;
+      
       if (!itemQuantities[itemId]) {
         itemQuantities[itemId] = 0;
       }
-      itemQuantities[itemId] += order.quantity;
+      
+      itemQuantities[itemId] += order.quantity || 1;
     });
     
-    // Get item details for the top items
+    // Get top N items by quantity
     const topItemIds = Object.entries(itemQuantities)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([itemId]) => itemId);
-      
-    const { data: itemData, error: itemError } = await supabase
+      .slice(0, limit)
+      .map(entry => entry[0]);
+    
+    if (topItemIds.length === 0) {
+      return [];
+    }
+    
+    // Fetch item details
+    const { data: itemsData, error: itemsError } = await supabase
       .from('items')
-      .select('item_id, item_name')
+      .select('item_id, item_name, item_price')
       .in('item_id', topItemIds);
+    
+    if (itemsError) throw itemsError;
+    
+    // Format for chart
+    return topItemIds.map(id => {
+      const item = itemsData.find(item => item.item_id === id);
       
-    if (itemError) throw itemError;
-    
-    // Create lookup map for item names
-    const itemNames = itemData.reduce((acc, item) => {
-      acc[item.item_id] = item.item_name;
-      return acc;
-    }, {});
-    
-    // Format data for the chart
-    return Object.entries(itemQuantities)
-      .map(([itemId, quantity]) => ({
-        name: itemNames[itemId] || `Item ${itemId}`,
-        quantity
-      }))
-      .sort((a, b) => b.quantity - a.quantity)
-      .slice(0, 5);
+      return {
+        name: item ? item.item_name : `Item ${id}`,
+        value: itemQuantities[id],
+        price: item ? item.item_price : 0
+      };
+    });
   } catch (error) {
     console.error('Error fetching top items:', error);
     throw error;

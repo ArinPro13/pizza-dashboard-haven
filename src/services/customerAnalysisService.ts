@@ -123,10 +123,10 @@ export async function fetchCustomerPreferences(
     if (itemError) throw itemError;
     
     // Create lookup map for item names
-    const itemNames = itemData.reduce((acc, item) => {
-      acc[item.item_id] = item.item_name;
-      return acc;
-    }, {});
+    const itemNames: Record<string, string> = {};
+    itemData.forEach(item => {
+      itemNames[item.item_id] = item.item_name;
+    });
     
     // Group by item
     const itemPreferences: Record<string, number> = {};
