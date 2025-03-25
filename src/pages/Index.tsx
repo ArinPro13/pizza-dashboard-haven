@@ -8,7 +8,7 @@ import { TopItemsChart } from "@/components/dashboard/TopItemsChart";
 import { DateRangePicker } from "@/components/analysis/DateRangePicker";
 import { DollarSign, ShoppingBag, Users, Truck } from "lucide-react";
 import { fetchDashboardKPIs, fetchSalesTrend, fetchTopItems } from "@/services/dashboardService";
-import { toast } from "@/components/ui/sonner";
+import { toast } from "sonner";
 
 const Dashboard = () => {
   const [dateRange, setDateRange] = useState({
