@@ -19,7 +19,7 @@ export async function fetchDashboardKPIs(dateRange: DateRange) {
     // Total sales amount
     const { data: orderData, error: orderError } = await supabase
       .from('orders')
-      .select('quantity, item_id, delivery')
+      .select('quantity, item_id, delivery, order_id')
       .gte('created_at', fromDate)
       .lte('created_at', toDate);
       

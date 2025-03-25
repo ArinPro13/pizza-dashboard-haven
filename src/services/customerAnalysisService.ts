@@ -96,7 +96,11 @@ export async function fetchCustomerPreferences(
     
     // Filter by customer if provided
     if (customerId) {
-      query = query.eq('cust_id', customerId);
+      // Convert customerId string to number before using it in the query
+      const customerIdNum = parseInt(customerId, 10);
+      if (!isNaN(customerIdNum)) {
+        query = query.eq('cust_id', customerIdNum);
+      }
     }
     
     const { data: orderData, error: orderError } = await query;
@@ -169,7 +173,11 @@ export async function fetchDeliveryPickupPreferences(
     
     // Filter by customer if provided
     if (customerId) {
-      query = query.eq('cust_id', customerId);
+      // Convert customerId string to number before using it in the query
+      const customerIdNum = parseInt(customerId, 10);
+      if (!isNaN(customerIdNum)) {
+        query = query.eq('cust_id', customerIdNum);
+      }
     }
     
     const { data, error } = await query;
